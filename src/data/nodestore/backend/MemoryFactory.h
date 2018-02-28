@@ -1,0 +1,216 @@
+//------------------------------------------------------------------------------
+/*
+    This file is part of skywelld: https://github.com/skywell/skywelld
+    Copyright (c) 2012, 2013 Skywell Labs Inc.
+
+    Permission to use, copy, modify, and/or distribute this software for any
+    purpose  with  or without fee is hereby granted, provided that the above
+    copyright notice and this permission notice appear in all copies.
+
+    THE  SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+    WITH  REGARD  TO  THIS  SOFTWARE  INCLUDING  ALL  IMPLIED  WARRANTIES  OF
+    MERCHANTABILITY  AND  FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+    ANY  SPECIAL ,  DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+    WHATSOEVER  RESULTING  FROM  LOSS  OF USE, DATA OR PROFITS, WHETHER IN AN
+    ACTION  OF  CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+    OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+*/
+//==============================================================================
+
+#ifndef SKYWELL_APP_DATA_NODESTORE_MEMORY_H_INCLUDED
+#define SKYWELL_APP_DATA_NODESTORE_MEMORY_H_INCLUDED
+
+#include <BeastConfig.h>
+#include <data/nodestore/Factory.h>
+#include <data/nodestore/Manager.h>
+#include <common/misc/Utility.h>
+#include <map>
+#include <mutex>
+
+namespace skywell {
+namespace NodeStore {
+
+struct MemoryDB
+{
+    std::mutex mutex;
+    bool open = false;
+    std::map <uint256 const, NodeObject::Ptr> table;
+};
+
+class MemoryFactory : public Factory
+{
+private:
+    std::mutex mutex_;
+    std::map <std::string, MemoryDB> map_;
+
+public:
+    MemoryFactory();
+    ~MemoryFactory();
+
+    std::string
+    getName() const;
+
+    std::unique_ptr <Backend>
+    createInstance (
+        size_t keyBytes,
+        Section const& keyValues,
+        Scheduler& scheduler,
+        beast::Journal journal);
+
+    MemoryDB&
+    open (std::string const& path)
+    {
+        std::lock_guard<std::mutex> _(mutex_);
+        auto const result = map_.emplace (std::piecewise_construct,
+            std::make_tuple(path), std::make_tuple());
+        MemoryDB& db = result.first->second;
+        if (db.open)
+            throw std::runtime_error("already open");
+        return db;
+    }
+};
+
+
+static MemoryFactory memoryFactory;
+//------------------------------------------------------------------------------
+
+class MemoryBackend : public Backend
+{
+private:
+    using Map = std::map <uint256 const, NodeObject::Ptr>;
+
+    std::string name_;
+    beast::Journal journal_;
+    MemoryDB* db_;
+
+public:
+    MemoryBackend (size_t keyBytes, Section const& keyValues,
+        Scheduler& scheduler, beast::Journal journal)
+        : name_ (get<std::string>(keyValues, "path"))
+        , journal_ (journal)
+    {
+        if (name_.empty())
+            throw std::runtime_error ("Missing path in Memory backend");
+        db_ = &memoryFactory.open(name_);
+    }
+
+    ~MemoryBackend ()
+    {
+        close();
+    }
+
+    std::string
+    getName ()
+    {
+        return name_;
+    }
+
+    void
+    close() override
+    {
+        db_ = nullptr;
+    }
+
+    //--------------------------------------------------------------------------
+
+    Status
+    fetch (void const* key, NodeObject::Ptr* pObject)
+    {
+        uint256 const hash (uint256::fromVoid (key));
+
+        std::lock_guard<std::mutex> _(db_->mutex);
+
+        Map::iterator iter = db_->table.find (hash);
+        if (iter == db_->table.end())
+        {
+            pObject->reset();
+            return notFound;
+        }
+        *pObject = iter->second;
+        return ok;
+    }
+
+    bool
+    canFetchBatch() override
+    {
+        return false;
+    }
+
+    std::vector<std::shared_ptr<NodeObject>>
+    fetchBatch (std::size_t n, void const* const* keys) override
+    {
+        throw std::runtime_error("pure virtual called");
+        return {};
+    }
+
+    void
+    store (NodeObject::ref object)
+    {
+        std::lock_guard<std::mutex> _(db_->mutex);
+        db_->table.emplace (object->getHash(), object);
+    }
+
+    void
+    storeBatch (Batch const& batch)
+    {
+        for (auto const& e : batch)
+            store (e);
+    }
+
+    void
+    for_each (std::function <void(NodeObject::Ptr)> f)
+    {
+        for (auto const& e : db_->table)
+            f (e.second);
+    }
+
+    int
+    getWriteLoad()
+    {
+        return 0;
+    }
+
+    void
+    setDeletePath() override
+    {
+    }
+
+    void
+    verify() override
+    {
+    }
+};
+
+//------------------------------------------------------------------------------
+
+MemoryFactory::MemoryFactory()
+{   
+    Manager::instance().insert(*this);
+}
+
+MemoryFactory::~MemoryFactory()
+{
+    Manager::instance().erase(*this);
+}
+
+std::string
+MemoryFactory::getName() const
+{
+    return "Memory";
+}
+
+std::unique_ptr <Backend>
+MemoryFactory::createInstance (
+    size_t keyBytes,
+    Section const& keyValues,
+    Scheduler& scheduler,
+    beast::Journal journal)
+{
+    return std::make_unique <MemoryBackend> (
+        keyBytes, keyValues, scheduler, journal);
+}
+
+}
+}
+
+#endif

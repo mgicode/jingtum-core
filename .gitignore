@@ -1,0 +1,8 @@
+tags
+src/cscope.out
+src/tags
+build/
+.vagrant
+*.out
+*.o
+*.pyc

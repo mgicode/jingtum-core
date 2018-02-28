@@ -1,0 +1,9 @@
+[submodule "libs/rocksdb"]
+	path = libs/rocksdb
+	url = https://github.com/facebook/rocksdb.git
+[submodule "libs/soci"]
+	path = libs/soci
+	url = https://github.com/SOCI/soci.git
+[submodule "libs/websocketpp"]
+	path = libs/websocketpp
+	url = https://github.com/zaphoyd/websocketpp.git

@@ -1,0 +1,1 @@
+# common class and structure dir
